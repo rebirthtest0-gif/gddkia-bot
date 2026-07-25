@@ -1,5 +1,6 @@
 const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, Partials } = require('discord.js');
 const express = require('express');
+const cors = require('cors');
 require('dotenv').config();
 
 // ==================== KONFIGURACJA ====================
@@ -9,15 +10,10 @@ const CHANNEL_ID = process.env.CHANNEL_ID;
 const ROLE_ID  = process.env.ROLE_ID;
 const ROLE_ID2 = process.env.ROLE_ID_2;
 const ROLE_ID3 = process.env.ROLE_ID_3;
-
-if (!ROLE_ID || !ROLE_ID2 || !ROLE_ID3) {
-  console.error('❌ BŁĄD: Brakuje ROLE_ID, ROLE_ID_2 lub ROLE_ID_3 w .env');
-  process.exit(1);
-}
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 const PORT = process.env.PORT || 3000;
 
-if (!TOKEN || !GUILD_ID || !CHANNEL_ID || !ROLE_ID || !WEBHOOK_SECRET) {
+if (!TOKEN || !GUILD_ID || !CHANNEL_ID || !ROLE_ID || !ROLE_ID2 || !ROLE_ID3 || !WEBHOOK_SECRET) {
   console.error('❌ BŁĄD: Brakuje zmiennych środowiskowych! Sprawdź .env');
   process.exit(1);
 }
@@ -36,6 +32,7 @@ const client = new Client({
 
 // ==================== EXPRESS WEBHOOK ====================
 const app = express();
+app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '10mb' }));
 
 // Health check (Railway sprawdza czy bot żyje)
@@ -50,7 +47,7 @@ app.get('/', (req, res) => {
 // Główny endpoint - odbiera podania ze strony
 app.post('/api/submit', async (req, res) => {
   try {
-    // Weryfikacja secret (żeby nikt inny nie mógł wysyłać fałszywych podań)
+    // Weryfikacja secret
     const authHeader = req.headers['x-webhook-secret'];
     if (authHeader !== WEBHOOK_SECRET) {
       console.log('🚫 Odrzucono request - zły secret');
@@ -73,7 +70,7 @@ app.post('/api/submit', async (req, res) => {
 
     // Stwórz embed z podaniem
     const embed = new EmbedBuilder()
-      .setColor(0xf26522) // Pomarańcz GDDKiA
+      .setColor(0xf26522)
       .setTitle('🛣️ Nowe podanie do GDDKiA')
       .setDescription('Kliknij przycisk poniżej, aby rozpatrzyć podanie.')
       .addFields(
@@ -117,8 +114,6 @@ app.post('/api/submit', async (req, res) => {
         .setStyle(ButtonStyle.Danger)
     );
 
-    // Zapisz dane podania w pamięci (do użycia przy kliknięciu przycisku)
-    // W produkcji lepiej użyć bazy danych (Redis, PostgreSQL itp.)
     const applicationId = Date.now().toString();
     client.applications = client.applications || new Map();
     client.applications.set(applicationId, {
@@ -126,7 +121,6 @@ app.post('/api/submit', async (req, res) => {
       timestamp: timestamp
     });
 
-    // Wyślij wiadomość na kanał
     await channel.send({
       embeds: [embed],
       components: [row]
@@ -152,7 +146,6 @@ client.on('interactionCreate', async (interaction) => {
   if (!isAccept && !isReject) return;
 
   try {
-    // Pobierz nick Discord z embeda (z pierwszego fielda)
     const embed = interaction.message.embeds[0];
     const nickField = embed.fields.find(f => f.name.includes('Nick Discord'));
     const discordNick = nickField ? nickField.value : null;
@@ -165,10 +158,9 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // Znajdź użytkownika na serwerze po nicku
     const guild = await client.guilds.fetch(GUILD_ID);
     const members = await guild.members.fetch();
-    const member = members.find(m => 
+    const member = members.find(m =>
       m.user.username.toLowerCase() === discordNick.toLowerCase() ||
       m.user.tag.toLowerCase() === discordNick.toLowerCase() ||
       m.user.globalName?.toLowerCase() === discordNick.toLowerCase() ||
@@ -177,7 +169,7 @@ client.on('interactionCreate', async (interaction) => {
 
     if (!member) {
       await interaction.reply({
-        content: `❌ Nie znaleziono użytkownika **${discordNick}** na serwerze. Upewnij się, że podał poprawny nick.`,
+        content: `❌ Nie znaleziono użytkownika **${discordNick}** na serwerze.`,
         ephemeral: true
       });
       return;
@@ -186,9 +178,6 @@ client.on('interactionCreate', async (interaction) => {
     const user = member.user;
 
     if (isAccept) {
-      // === AKCEPTACJA ===
-
-      // 1. Nadaj 3 role
       const role1 = await guild.roles.fetch(ROLE_ID);
       const role2 = await guild.roles.fetch(ROLE_ID2);
       const role3 = await guild.roles.fetch(ROLE_ID3);
@@ -201,13 +190,11 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
-      // Nadaj wszystkie 3 role na raz
       await member.roles.add([role1, role2, role3]).catch(err => {
         console.error('Błąd nadawania ról:', err);
-        throw new Error('Nie udało się nadać ról. Sprawdź czy rola bota jest wyżej w hierarchii niż role do nadania.');
+        throw new Error('Nie udało się nadać ról. Sprawdź hierarchię ról.');
       });
 
-      // 2. Wyślij DM do użytkownika
       try {
         await user.send({
           embeds: [
@@ -219,16 +206,14 @@ client.on('interactionCreate', async (interaction) => {
           ]
         });
       } catch (dmErr) {
-        console.log('Nie udało się wysłać DM do', user.tag, '- użytkownik może mieć wyłączone DM');
+        console.log('Nie udało się wysłać DM do', user.tag);
       }
 
-      // 3. Odpowiedź na interakcję
       await interaction.reply({
         content: `✅ **Zaakceptowano** podanie użytkownika **${user.tag}**. Role **${role1.name}**, **${role2.name}**, **${role3.name}** nadane, DM wysłane.`,
         ephemeral: true
       });
 
-      // 4. Zaktualizuj oryginalną wiadomość (usuń przyciski, dodaj info)
       const updatedEmbed = EmbedBuilder.from(embed)
         .setColor(0x28a745)
         .setTitle('🛣️ Podanie do GDDKiA — ZAAKCEPTOWANE')
@@ -237,15 +222,12 @@ client.on('interactionCreate', async (interaction) => {
 
       await interaction.message.edit({
         embeds: [updatedEmbed],
-        components: [] // Usuń przyciski
+        components: []
       });
 
       console.log('✅ Zaakceptowano podanie użytkownika:', user.tag);
 
     } else {
-      // === ODRZUCENIE ===
-
-      // 1. Wyślij DM do użytkownika
       try {
         await user.send({
           embeds: [
@@ -257,16 +239,14 @@ client.on('interactionCreate', async (interaction) => {
           ]
         });
       } catch (dmErr) {
-        console.log('Nie udało się wysłać DM do', user.tag, '- użytkownik może mieć wyłączone DM');
+        console.log('Nie udało się wysłać DM do', user.tag);
       }
 
-      // 2. Odpowiedź na interakcję
       await interaction.reply({
         content: `❌ **Odrzucono** podanie użytkownika **${user.tag}**. DM wysłane.`,
         ephemeral: true
       });
 
-      // 3. Zaktualizuj oryginalną wiadomość
       const updatedEmbed = EmbedBuilder.from(embed)
         .setColor(0xdc3545)
         .setTitle('🛣️ Podanie do GDDKiA — ODRZUCONE')
@@ -275,7 +255,7 @@ client.on('interactionCreate', async (interaction) => {
 
       await interaction.message.edit({
         embeds: [updatedEmbed],
-        components: [] // Usuń przyciski
+        components: []
       });
 
       console.log('❌ Odrzucono podanie użytkownika:', user.tag);
@@ -291,24 +271,20 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 // ==================== STARTUP ====================
-client.once('ready', () => {
+client.once('clientReady', () => {
   console.log('🤖 Bot GDDKiA jest online!');
   console.log('   Tag:', client.user.tag);
   console.log('   Serwer:', GUILD_ID);
   console.log('   Kanał:', CHANNEL_ID);
   console.log('   Rola:', ROLE_ID);
   console.log('   Webhook:', `http://localhost:${PORT}/api/submit`);
-
-  // Ustaw status bota
-  client.user.setActivity('podania GDDKiA', { type: 3 }); // 3 = WATCHING
+  client.user.setActivity('podania GDDKiA', { type: 3 });
 });
 
-// Start Express
 app.listen(PORT, () => {
   console.log(`🌐 Webhook nasłuchuje na porcie ${PORT}`);
 });
 
-// Login
 client.login(TOKEN).catch(err => {
   console.error('❌ Błąd logowania bota:', err.message);
   process.exit(1);
