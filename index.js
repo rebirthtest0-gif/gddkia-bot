@@ -6,7 +6,14 @@ require('dotenv').config();
 const TOKEN = process.env.DISCORD_TOKEN;
 const GUILD_ID = process.env.GUILD_ID;
 const CHANNEL_ID = process.env.CHANNEL_ID;
-const ROLE_ID = process.env.ROLE_ID;
+const ROLE_ID  = process.env.ROLE_ID;
+const ROLE_ID2 = process.env.ROLE_ID_2;
+const ROLE_ID3 = process.env.ROLE_ID_3;
+
+if (!ROLE_ID || !ROLE_ID2 || !ROLE_ID3) {
+  console.error('❌ BŁĄD: Brakuje ROLE_ID, ROLE_ID_2 lub ROLE_ID_3 w .env');
+  process.exit(1);
+}
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 const PORT = process.env.PORT || 3000;
 
@@ -181,19 +188,23 @@ client.on('interactionCreate', async (interaction) => {
     if (isAccept) {
       // === AKCEPTACJA ===
 
-      // 1. Nadaj rolę
-      const role = await guild.roles.fetch(ROLE_ID);
-      if (!role) {
+      // 1. Nadaj 3 role
+      const role1 = await guild.roles.fetch(ROLE_ID);
+      const role2 = await guild.roles.fetch(ROLE_ID2);
+      const role3 = await guild.roles.fetch(ROLE_ID3);
+
+      if (!role1 || !role2 || !role3) {
         await interaction.reply({
-          content: '❌ Nie znaleziono roli do nadania. Sprawdź ROLE_ID w .env',
+          content: '❌ Nie znaleziono jednej z ról. Sprawdź ROLE_ID, ROLE_ID_2, ROLE_ID_3 w .env',
           ephemeral: true
         });
         return;
       }
 
-      await member.roles.add(role).catch(err => {
-        console.error('Błąd nadawania roli:', err);
-        throw new Error('Nie udało się nadać roli. Sprawdź czy rola bota jest wyżej niż rola do nadania.');
+      // Nadaj wszystkie 3 role na raz
+      await member.roles.add([role1, role2, role3]).catch(err => {
+        console.error('Błąd nadawania ról:', err);
+        throw new Error('Nie udało się nadać ról. Sprawdź czy rola bota jest wyżej w hierarchii niż role do nadania.');
       });
 
       // 2. Wyślij DM do użytkownika
@@ -203,7 +214,7 @@ client.on('interactionCreate', async (interaction) => {
             new EmbedBuilder()
               .setColor(0x28a745)
               .setTitle('✅ Podanie zaakceptowane!')
-              .setDescription(`Gratulacje! Twoje podanie do **GDDKiA** zostało **zaakceptowane** przez ${interaction.user.tag}.\n\nNadano Ci rolę **${role.name}**.\n\nZapraszamy na serwer!`)
+              .setDescription(`Gratulacje! Twoje podanie do **GDDKiA** zostało **zaakceptowane** przez ${interaction.user.tag}.\n\nNadano Ci role: **${role1.name}**, **${role2.name}**, **${role3.name}**.\n\nZapraszamy na serwer!`)
               .setTimestamp()
           ]
         });
@@ -213,7 +224,7 @@ client.on('interactionCreate', async (interaction) => {
 
       // 3. Odpowiedź na interakcję
       await interaction.reply({
-        content: `✅ **Zaakceptowano** podanie użytkownika **${user.tag}**. Rola **${role.name}** nadana, DM wysłane.`,
+        content: `✅ **Zaakceptowano** podanie użytkownika **${user.tag}**. Role **${role1.name}**, **${role2.name}**, **${role3.name}** nadane, DM wysłane.`,
         ephemeral: true
       });
 
