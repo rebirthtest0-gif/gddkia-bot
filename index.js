@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, Partials, REST, Routes } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, Partials, REST, Routes, ChannelType, UserSelectMenuBuilder } = require('discord.js');
 const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
@@ -14,18 +14,23 @@ const ROLE_ID3 = process.env.ROLE_ID_3;
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 const PORT = process.env.PORT || 3000;
 
-// NOWE ZMIENNE DO DODANIA W RAILWAY:
-const SHIFT_CHANNEL_ID = process.env.SHIFT_CHANNEL_ID;        // 1530216179874926620
-const LEADERBOARD_CHANNEL_ID = process.env.LEADERBOARD_CHANNEL_ID; // 1530216180839878894
-const SHIFT_LOGO_URL = process.env.SHIFT_LOGO_URL;             // link do logo GDDKiA
+// SYSTEM PRACY
+const SHIFT_CHANNEL_ID = process.env.SHIFT_CHANNEL_ID;
+const LEADERBOARD_CHANNEL_ID = process.env.LEADERBOARD_CHANNEL_ID;
+const SHIFT_LOGO_URL = process.env.SHIFT_LOGO_URL;
+
+// SYSTEM TICKETÓW — DODAJ TE ZMIENNE W RAILWAY
+const TICKET_CHANNEL_ID = process.env.TICKET_CHANNEL_ID;               // 1530216179522601056
+const TICKET_CAT_KIEROWNICTWO = process.env.TICKET_CAT_KIEROWNICTWO;   // 1530216181028360321
+const TICKET_CAT_SKARGA = process.env.TICKET_CAT_SKARGA;               // 1530216181028360322
+const TICKET_CAT_INNE = process.env.TICKET_CAT_INNE;                   // 1530216181028360323
+const TICKET_LOG_CHANNEL = process.env.TICKET_LOG_CHANNEL;             // 1530216180839878895
+const TICKET_STAFF_ROLE_1 = process.env.TICKET_STAFF_ROLE_1;           // 1530216178834870373
+const TICKET_STAFF_ROLE_2 = process.env.TICKET_STAFF_ROLE_2;           // 1530216178822152388
 
 if (!TOKEN || !GUILD_ID || !CHANNEL_ID || !ROLE_ID || !ROLE_ID2 || !ROLE_ID3 || !WEBHOOK_SECRET) {
-  console.error('❌ BŁĄD: Brakuje zmiennych środowiskowych! Sprawdź .env');
+  console.error('❌ BŁĄD: Brakuje podstawowych zmiennych środowiskowych! Sprawdź .env');
   process.exit(1);
-}
-
-if (!SHIFT_CHANNEL_ID || !LEADERBOARD_CHANNEL_ID || !SHIFT_LOGO_URL) {
-  console.warn('⚠️  UWAGA: Brakuje SHIFT_CHANNEL_ID, LEADERBOARD_CHANNEL_ID lub SHIFT_LOGO_URL. System /praca nie zadziała.');
 }
 
 // ==================== DISCORD CLIENT ====================
@@ -193,7 +198,7 @@ function buildShiftEmbed(userId) {
   const embed = new EmbedBuilder()
     .setColor(0xf26522)
     .setTitle('Menadżer Pracy')
-    .setThumbnail(SHIFT_LOGO_URL)
+    .setThumbnail(SHIFT_LOGO_URL || null)
     .addFields(
       { name: '📋 Informacje Główne', value: '\u200B' },
       { name: 'Twoja Praca', value: `${data.weeklyShiftCount} shiftów`, inline: true },
@@ -240,7 +245,7 @@ async function sendWeeklyLeaderboard() {
       .setColor(0xf26522)
       .setTitle('📊 Podsumowanie tygodnia GDDKiA')
       .setDescription('TOP 5 pracowników według czasu pracy w tym tygodniu')
-      .setThumbnail(SHIFT_LOGO_URL)
+      .setThumbnail(SHIFT_LOGO_URL || null)
       .setTimestamp();
 
     if (entries.length === 0) {
@@ -271,6 +276,182 @@ async function sendWeeklyLeaderboard() {
   }
 }
 
+// ==================== SYSTEM TICKETÓW ====================
+const activeTickets = new Map(); // channelId -> { ownerId, type, createdAt }
+
+function hasStaffRole(member) {
+  if (!TICKET_STAFF_ROLE_1 && !TICKET_STAFF_ROLE_2) return false;
+  const r1 = TICKET_STAFF_ROLE_1 ? member.roles.cache.has(TICKET_STAFF_ROLE_1) : false;
+  const r2 = TICKET_STAFF_ROLE_2 ? member.roles.cache.has(TICKET_STAFF_ROLE_2) : false;
+  return r1 || r2;
+}
+
+function buildTicketEmbed(ownerId) {
+  return new EmbedBuilder()
+    .setColor(0xf26522)
+    .setTitle('🎫 Ticket')
+    .setDescription('Witamy! Twój ticket zostanie niebawem rozpatrzony. Prosimy o cierpliwość.')
+    .setFooter({ text: `Utworzono: ${new Date().toLocaleString('pl-PL')}` })
+    .setTimestamp();
+}
+
+function buildTicketButtons(channelId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`ticket_add_${channelId}`)
+      .setLabel('➕ Dodaj Osobę')
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId(`ticket_close_${channelId}`)
+      .setLabel('🔒 Zamknij Ticket')
+      .setStyle(ButtonStyle.Danger)
+  );
+}
+
+async function sendTicketPanel() {
+  if (!TICKET_CHANNEL_ID) return;
+  try {
+    const channel = await client.channels.fetch(TICKET_CHANNEL_ID);
+    if (!channel) return;
+
+    const embed = new EmbedBuilder()
+      .setColor(0xf26522)
+      .setTitle('🎫 System Ticketów GDDKiA')
+      .setDescription('Wybierz odpowiedni rodzaj ticketu, klikając przycisk poniżej.')
+      .setThumbnail(SHIFT_LOGO_URL || null)
+      .setFooter({ text: 'GDDKiA Katowice RP' })
+      .setTimestamp();
+
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('ticket_open_kierownictwo').setLabel('📝 Ticket Kierownictwo').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('ticket_open_skarga').setLabel('⚠️ Ticket Skarga').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId('ticket_open_inne').setLabel('❓ Ticket Inne').setStyle(ButtonStyle.Secondary)
+    );
+
+    await channel.send({ embeds: [embed], components: [row] });
+    console.log('✅ Wysłano panel ticketów na kanał:', TICKET_CHANNEL_ID);
+  } catch (err) {
+    console.error('Błąd wysyłania panelu ticketów:', err);
+  }
+}
+
+async function createTicket(interaction, type) {
+  if (!TICKET_CAT_KIEROWNICTWO || !TICKET_CAT_SKARGA || !TICKET_CAT_INNE) {
+    return interaction.reply({ content: '❌ System ticketów nie jest w pełni skonfigurowany.', ephemeral: true });
+  }
+
+  const guild = interaction.guild;
+  const member = interaction.member;
+  const user = interaction.user;
+
+  // Sprawdź czy użytkownik już ma otwarty ticket
+  for (const [chId, ticket] of activeTickets) {
+    if (ticket.ownerId === user.id && ticket.type === type) {
+      return interaction.reply({ content: `❌ Masz już otwarty ticket tego typu: <#${chId}>`, ephemeral: true });
+    }
+  }
+
+  let categoryId;
+  let channelName;
+  switch (type) {
+    case 'kierownictwo':
+      categoryId = TICKET_CAT_KIEROWNICTWO;
+      channelName = `kontakt-kierownictwo-${user.username}`.toLowerCase().replace(/[^a-z0-9\-]/g, '').slice(0, 90);
+      break;
+    case 'skarga':
+      categoryId = TICKET_CAT_SKARGA;
+      channelName = `skarga-${user.username}`.toLowerCase().replace(/[^a-z0-9\-]/g, '').slice(0, 90);
+      break;
+    case 'inne':
+      categoryId = TICKET_CAT_INNE;
+      channelName = `inny-powod-${user.username}`.toLowerCase().replace(/[^a-z0-9\-]/g, '').slice(0, 90);
+      break;
+  }
+
+  try {
+    const permissionOverwrites = [
+      { id: guild.id, deny: ['ViewChannel'] },
+      { id: user.id, allow: ['ViewChannel', 'SendMessages', 'ReadMessageHistory', 'AttachFiles'] },
+      { id: client.user.id, allow: ['ViewChannel', 'SendMessages', 'ManageChannels'] }
+    ];
+    if (TICKET_STAFF_ROLE_1) permissionOverwrites.push({ id: TICKET_STAFF_ROLE_1, allow: ['ViewChannel', 'SendMessages', 'ReadMessageHistory', 'ManageMessages'] });
+    if (TICKET_STAFF_ROLE_2) permissionOverwrites.push({ id: TICKET_STAFF_ROLE_2, allow: ['ViewChannel', 'SendMessages', 'ReadMessageHistory', 'ManageMessages'] });
+
+    const ticketChannel = await guild.channels.create({
+      name: channelName,
+      type: ChannelType.GuildText,
+      parent: categoryId,
+      permissionOverwrites
+    });
+
+    activeTickets.set(ticketChannel.id, { ownerId: user.id, type, createdAt: Date.now() });
+
+    const embed = buildTicketEmbed(user.id);
+    const buttons = buildTicketButtons(ticketChannel.id);
+
+    await ticketChannel.send({ content: `<@${user.id}>`, embeds: [embed], components: [buttons] });
+    await interaction.reply({ content: `✅ Ticket utworzony: <#${ticketChannel.id}>`, ephemeral: true });
+  } catch (err) {
+    console.error('Błąd tworzenia ticketu:', err);
+    await interaction.reply({ content: '❌ Nie udało się utworzyć ticketu.', ephemeral: true });
+  }
+}
+
+async function closeTicket(interaction, channelId) {
+  const ticket = activeTickets.get(channelId);
+  if (!ticket) {
+    return interaction.reply({ content: '❌ Ten ticket nie jest już aktywny.', ephemeral: true });
+  }
+
+  const member = interaction.member;
+  if (!hasStaffRole(member)) {
+    return interaction.reply({ content: '❌ Nie masz uprawnień do zamykania ticketów.', ephemeral: true });
+  }
+
+  try {
+    const guild = interaction.guild;
+    const channel = await client.channels.fetch(channelId);
+    const owner = await client.users.fetch(ticket.ownerId);
+
+    // Log
+    if (TICKET_LOG_CHANNEL) {
+      const logChannel = await client.channels.fetch(TICKET_LOG_CHANNEL);
+      if (logChannel) {
+        const logEmbed = new EmbedBuilder()
+          .setColor(0xdc3545)
+          .setTitle('🔒 Ticket Zamknięty')
+          .addFields(
+            { name: 'Kanał', value: `#${channel.name}`, inline: true },
+            { name: 'Typ', value: ticket.type, inline: true },
+            { name: 'Właściciel', value: `<@${ticket.ownerId}>`, inline: true },
+            { name: 'Zamknięty przez', value: `<@${interaction.user.id}>`, inline: true },
+            { name: 'Data zamknięcia', value: new Date().toLocaleString('pl-PL'), inline: true }
+          )
+          .setTimestamp();
+        await logChannel.send({ embeds: [logEmbed] });
+      }
+    }
+
+    // DM do właściciela
+    try {
+      const dmEmbed = new EmbedBuilder()
+        .setColor(0xdc3545)
+        .setTitle('🔒 Ticket Zamknięty')
+        .setDescription(`Twój ticket **#${channel.name}** został zamknięty przez <@${interaction.user.id}>.`)
+        .setFooter({ text: `Zamknięto: ${new Date().toLocaleString('pl-PL')}` })
+        .setTimestamp();
+      await owner.send({ embeds: [dmEmbed] });
+    } catch (e) { console.log('Nie udało się wysłać DM o zamknięciu ticketu do', owner.tag); }
+
+    activeTickets.delete(channelId);
+    await interaction.reply({ content: '🔒 Ticket zostanie zamknięty...', ephemeral: true });
+    setTimeout(() => channel.delete().catch(() => {}), 3000);
+  } catch (err) {
+    console.error('Błąd zamykania ticketu:', err);
+    await interaction.reply({ content: '❌ Wystąpił błąd podczas zamykania ticketu.', ephemeral: true });
+  }
+}
+
 // ==================== INTERACTION HANDLER ====================
 client.on('interactionCreate', async (interaction) => {
   // Slash commands
@@ -291,7 +472,7 @@ client.on('interactionCreate', async (interaction) => {
       const embed = new EmbedBuilder()
         .setColor(0xf26522)
         .setTitle('📋 Statystyki Pracy')
-        .setThumbnail(SHIFT_LOGO_URL)
+        .setThumbnail(SHIFT_LOGO_URL || null)
         .addFields(
           { name: 'Użytkownik', value: `<@${target.id}>`, inline: false },
           { name: '📅 Ten tydzień', value: formatTime(data.weeklySeconds + sessionSec), inline: true },
@@ -303,10 +484,49 @@ client.on('interactionCreate', async (interaction) => {
 
       return interaction.reply({ embeds: [embed], ephemeral: true });
     }
+
+    if (interaction.commandName === 'ticketsetup') {
+      if (!interaction.memberPermissions.has('Administrator')) {
+        return interaction.reply({ content: '❌ Tylko administrator może użyć tej komendy.', ephemeral: true });
+      }
+      await sendTicketPanel();
+      return interaction.reply({ content: '✅ Panel ticketów został wysłany.', ephemeral: true });
+    }
   }
 
   // Buttons
   if (!interaction.isButton()) return;
+
+  // Ticket open buttons
+  if (interaction.customId.startsWith('ticket_open_')) {
+    const type = interaction.customId.replace('ticket_open_', '');
+    return createTicket(interaction, type);
+  }
+
+  // Ticket close button
+  if (interaction.customId.startsWith('ticket_close_')) {
+    const channelId = interaction.customId.replace('ticket_close_', '');
+    return closeTicket(interaction, channelId);
+  }
+
+  // Ticket add user button -> send UserSelectMenu
+  if (interaction.customId.startsWith('ticket_add_')) {
+    const channelId = interaction.customId.replace('ticket_add_', '');
+    const member = interaction.member;
+    if (!hasStaffRole(member)) {
+      return interaction.reply({ content: '❌ Nie masz uprawnień do dodawania osób do ticketów.', ephemeral: true });
+    }
+
+    const row = new ActionRowBuilder().addComponents(
+      new UserSelectMenuBuilder()
+        .setCustomId(`ticket_select_add_${channelId}`)
+        .setPlaceholder('Wybierz użytkownika do dodania')
+        .setMinValues(1)
+        .setMaxValues(1)
+    );
+
+    return interaction.reply({ content: 'Wybierz użytkownika, którego chcesz dodać do ticketu:', components: [row], ephemeral: true });
+  }
 
   // Shift buttons
   if (interaction.customId.startsWith('shift_')) {
@@ -324,12 +544,10 @@ client.on('interactionCreate', async (interaction) => {
     } else if (action === 'pause') {
       if (!data.currentShift) return interaction.reply({ content: '❌ Nie masz rozpoczętej pracy.', ephemeral: true });
       if (data.currentShift.isPaused) {
-        // Wznów
         data.currentShift.startTime = Date.now();
         data.currentShift.isPaused = false;
         data.currentShift.pauseStart = null;
       } else {
-        // Pauza
         data.currentShift.accumulatedMs += Date.now() - data.currentShift.startTime;
         data.currentShift.isPaused = true;
         data.currentShift.pauseStart = Date.now();
@@ -423,6 +641,37 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
+// UserSelectMenu handler
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isUserSelectMenu()) return;
+  if (!interaction.customId.startsWith('ticket_select_add_')) return;
+
+  const channelId = interaction.customId.replace('ticket_select_add_', '');
+  const ticket = activeTickets.get(channelId);
+  if (!ticket) {
+    return interaction.reply({ content: '❌ Ten ticket nie jest już aktywny.', ephemeral: true });
+  }
+
+  if (!hasStaffRole(interaction.member)) {
+    return interaction.reply({ content: '❌ Nie masz uprawnień.', ephemeral: true });
+  }
+
+  const selectedUserId = interaction.values[0];
+  try {
+    const channel = await client.channels.fetch(channelId);
+    await channel.permissionOverwrites.create(selectedUserId, {
+      ViewChannel: true,
+      SendMessages: true,
+      ReadMessageHistory: true,
+      AttachFiles: true
+    });
+    await interaction.reply({ content: `✅ Dodano <@${selectedUserId}> do ticketu.`, ephemeral: true });
+  } catch (err) {
+    console.error('Błąd dodawania użytkownika do ticketu:', err);
+    await interaction.reply({ content: '❌ Nie udało się dodać użytkownika.', ephemeral: true });
+  }
+});
+
 // ==================== STARTUP ====================
 client.once('clientReady', async () => {
   console.log('🤖 Bot GDDKiA jest online!');
@@ -431,6 +680,7 @@ client.once('clientReady', async () => {
   console.log('   Kanał podań:', CHANNEL_ID);
   console.log('   Kanał pracy:', SHIFT_CHANNEL_ID || 'NIEUSTAWIONY');
   console.log('   Kanał tabeli:', LEADERBOARD_CHANNEL_ID || 'NIEUSTAWIONY');
+  console.log('   Kanał ticketów:', TICKET_CHANNEL_ID || 'NIEUSTAWIONY');
   console.log('   Webhook:', `http://localhost:${PORT}/api/submit`);
   client.user.setActivity('podania GDDKiA', { type: 3 });
 
@@ -457,15 +707,25 @@ client.once('clientReady', async () => {
           }
         ],
         dm_permission: false
+      },
+      {
+        name: 'ticketsetup',
+        description: 'Wyślij panel ticketów na kanał (tylko admin)',
+        dm_permission: false
       }
     ];
     await rest.put(Routes.applicationGuildCommands(client.user.id, GUILD_ID), { body: commands });
-    console.log('✅ Zarejestrowano komendy slash: /praca, /sprawdz');
+    console.log('✅ Zarejestrowano komendy slash: /praca, /sprawdz, /ticketsetup');
   } catch (err) {
     console.error('❌ Błąd rejestracji komend:', err);
   }
 
-  // Sprawdź czy trzeba wysłać tabelę (jeśli bot był offline przez zmianę tygodnia)
+  // Auto-wyślij panel ticketów przy starcie (jeśli skonfigurowano)
+  if (TICKET_CHANNEL_ID) {
+    setTimeout(() => sendTicketPanel(), 3000);
+  }
+
+  // Sprawdź czy trzeba wysłać tabelę
   setTimeout(() => {
     const currentWeek = getWeekKey();
     for (const data of shiftData.values()) {
