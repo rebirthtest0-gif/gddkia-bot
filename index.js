@@ -1,7 +1,7 @@
 const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, Partials, REST, Routes, ChannelType, UserSelectMenuBuilder } = require('discord.js');
 const express = require('express');
 const cors = require('cors');
-const fs = require('fs');
+const Database = require('better-sqlite3');
 require('dotenv').config();
 
 // ==================== KONFIGURACJA ====================
@@ -19,18 +19,112 @@ const SHIFT_CHANNEL_ID = process.env.SHIFT_CHANNEL_ID;
 const LEADERBOARD_CHANNEL_ID = process.env.LEADERBOARD_CHANNEL_ID;
 const SHIFT_LOGO_URL = process.env.SHIFT_LOGO_URL;
 
-// SYSTEM TICKETÓW — DODAJ TE ZMIENNE W RAILWAY
-const TICKET_CHANNEL_ID = process.env.TICKET_CHANNEL_ID;               // 1530216179522601056
-const TICKET_CAT_KIEROWNICTWO = process.env.TICKET_CAT_KIEROWNICTWO;   // 1530216181028360321
-const TICKET_CAT_SKARGA = process.env.TICKET_CAT_SKARGA;               // 1530216181028360322
-const TICKET_CAT_INNE = process.env.TICKET_CAT_INNE;                   // 1530216181028360323
-const TICKET_LOG_CHANNEL = process.env.TICKET_LOG_CHANNEL;             // 1530216180839878895
-const TICKET_STAFF_ROLE_1 = process.env.TICKET_STAFF_ROLE_1;           // 1530216178834870373
-const TICKET_STAFF_ROLE_2 = process.env.TICKET_STAFF_ROLE_2;           // 1530216178822152388
+// SYSTEM TICKETÓW
+const TICKET_CHANNEL_ID = process.env.TICKET_CHANNEL_ID;
+const TICKET_CAT_KIEROWNICTWO = process.env.TICKET_CAT_KIEROWNICTWO;
+const TICKET_CAT_SKARGA = process.env.TICKET_CAT_SKARGA;
+const TICKET_CAT_INNE = process.env.TICKET_CAT_INNE;
+const TICKET_LOG_CHANNEL = process.env.TICKET_LOG_CHANNEL;
+const TICKET_STAFF_ROLE_1 = process.env.TICKET_STAFF_ROLE_1;
+const TICKET_STAFF_ROLE_2 = process.env.TICKET_STAFF_ROLE_2;
+
+// BAZA DANYCH — na Railway ustaw DB_PATH=/data/bot.db + Volume pod /data
+const DB_PATH = process.env.DB_PATH || './bot.db';
 
 if (!TOKEN || !GUILD_ID || !CHANNEL_ID || !ROLE_ID || !ROLE_ID2 || !ROLE_ID3 || !WEBHOOK_SECRET) {
   console.error('❌ BŁĄD: Brakuje podstawowych zmiennych środowiskowych! Sprawdź .env');
   process.exit(1);
+}
+
+// ==================== SQLITE ====================
+const db = new Database(DB_PATH);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS shifts (
+    userId TEXT PRIMARY KEY,
+    totalSecondsAllTime INTEGER DEFAULT 0,
+    weeklySeconds INTEGER DEFAULT 0,
+    weeklyShiftCount INTEGER DEFAULT 0,
+    currentShift TEXT,
+    lastWeekKey TEXT
+  )
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS active_tickets (
+    channelId TEXT PRIMARY KEY,
+    ownerId TEXT NOT NULL,
+    type TEXT NOT NULL,
+    createdAt INTEGER NOT NULL
+  )
+`);
+
+// ==================== CACHE W PAMIĘCI ====================
+const shiftData = new Map();
+const activeTickets = new Map();
+
+function dbLoadAll() {
+  const shiftRows = db.prepare('SELECT * FROM shifts').all();
+  for (const row of shiftRows) {
+    shiftData.set(row.userId, {
+      totalSecondsAllTime: row.totalSecondsAllTime,
+      weeklySeconds: row.weeklySeconds,
+      weeklyShiftCount: row.weeklyShiftCount,
+      currentShift: row.currentShift ? JSON.parse(row.currentShift) : null,
+      lastWeekKey: row.lastWeekKey
+    });
+  }
+  console.log(`📁 Wczytano ${shiftRows.length} rekordów pracy z SQLite`);
+
+  const ticketRows = db.prepare('SELECT * FROM active_tickets').all();
+  for (const row of ticketRows) {
+    activeTickets.set(row.channelId, {
+      ownerId: row.ownerId,
+      type: row.type,
+      createdAt: row.createdAt
+    });
+  }
+  console.log(`📁 Wczytano ${ticketRows.length} aktywnych ticketów z SQLite`);
+}
+
+function dbSaveShift(userId, data) {
+  db.prepare(`
+    INSERT INTO shifts (userId, totalSecondsAllTime, weeklySeconds, weeklyShiftCount, currentShift, lastWeekKey)
+    VALUES (@userId, @totalSecondsAllTime, @weeklySeconds, @weeklyShiftCount, @currentShift, @lastWeekKey)
+    ON CONFLICT(userId) DO UPDATE SET
+      totalSecondsAllTime = excluded.totalSecondsAllTime,
+      weeklySeconds = excluded.weeklySeconds,
+      weeklyShiftCount = excluded.weeklyShiftCount,
+      currentShift = excluded.currentShift,
+      lastWeekKey = excluded.lastWeekKey
+  `).run({
+    userId,
+    totalSecondsAllTime: data.totalSecondsAllTime,
+    weeklySeconds: data.weeklySeconds,
+    weeklyShiftCount: data.weeklyShiftCount,
+    currentShift: data.currentShift ? JSON.stringify(data.currentShift) : null,
+    lastWeekKey: data.lastWeekKey
+  });
+}
+
+function dbDeleteTicket(channelId) {
+  db.prepare('DELETE FROM active_tickets WHERE channelId = ?').run(channelId);
+}
+
+function dbSaveTicket(channelId, ticket) {
+  db.prepare(`
+    INSERT INTO active_tickets (channelId, ownerId, type, createdAt)
+    VALUES (@channelId, @ownerId, @type, @createdAt)
+    ON CONFLICT(channelId) DO UPDATE SET
+      ownerId = excluded.ownerId,
+      type = excluded.type,
+      createdAt = excluded.createdAt
+  `).run({
+    channelId,
+    ownerId: ticket.ownerId,
+    type: ticket.type,
+    createdAt: ticket.createdAt
+  });
 }
 
 // ==================== DISCORD CLIENT ====================
@@ -106,13 +200,9 @@ app.post('/api/submit', async (req, res) => {
       new ButtonBuilder().setCustomId('reject_' + Date.now()).setLabel('❌ Odrzuć').setStyle(ButtonStyle.Danger)
     );
 
-    const applicationId = Date.now().toString();
-    client.applications = client.applications || new Map();
-    client.applications.set(applicationId, { discordNick: answers.q3, timestamp: timestamp });
-
     await channel.send({ embeds: [embed], components: [row] });
     console.log('✅ Podanie wysłane na kanał:', CHANNEL_ID);
-    res.json({ success: true, applicationId });
+    res.json({ success: true, applicationId: Date.now().toString() });
   } catch (err) {
     console.error('❌ Błąd podczas przetwarzania podania:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -120,9 +210,6 @@ app.post('/api/submit', async (req, res) => {
 });
 
 // ==================== SYSTEM PRACY (SHIFT) ====================
-const SHIFTS_FILE = './shifts.json';
-const shiftData = new Map();
-
 function getWeekKey() {
   const now = new Date();
   const d = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
@@ -133,32 +220,18 @@ function getWeekKey() {
   return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`;
 }
 
-function loadShifts() {
-  try {
-    if (fs.existsSync(SHIFTS_FILE)) {
-      const raw = JSON.parse(fs.readFileSync(SHIFTS_FILE, 'utf8'));
-      for (const [k, v] of Object.entries(raw)) shiftData.set(k, v);
-      console.log('📁 Wczytano dane pracy z pliku');
-    }
-  } catch (e) { console.error('Błąd wczytywania shifts:', e); }
-}
-
-function saveShifts() {
-  try {
-    const obj = Object.fromEntries(shiftData);
-    fs.writeFileSync(SHIFTS_FILE, JSON.stringify(obj, null, 2));
-  } catch (e) { console.error('Błąd zapisu shifts:', e); }
-}
-
 function getUserShiftData(userId) {
   if (!shiftData.has(userId)) {
-    shiftData.set(userId, {
+    const currentWeek = getWeekKey();
+    const fresh = {
       totalSecondsAllTime: 0,
       weeklySeconds: 0,
       weeklyShiftCount: 0,
       currentShift: null,
-      lastWeekKey: getWeekKey()
-    });
+      lastWeekKey: currentWeek
+    };
+    shiftData.set(userId, fresh);
+    dbSaveShift(userId, fresh);
   }
   const data = shiftData.get(userId);
   const currentWeek = getWeekKey();
@@ -166,7 +239,7 @@ function getUserShiftData(userId) {
     data.weeklySeconds = 0;
     data.weeklyShiftCount = 0;
     data.lastWeekKey = currentWeek;
-    saveShifts();
+    dbSaveShift(userId, data);
   }
   return data;
 }
@@ -264,12 +337,12 @@ async function sendWeeklyLeaderboard() {
     await channel.send({ embeds: [embed] });
 
     const currentWeek = getWeekKey();
-    for (const data of shiftData.values()) {
+    for (const [userId, data] of shiftData) {
       data.weeklySeconds = 0;
       data.weeklyShiftCount = 0;
       data.lastWeekKey = currentWeek;
+      dbSaveShift(userId, data);
     }
-    saveShifts();
     console.log('📊 Wysłano tabelę tygodniową i zresetowano dane.');
   } catch (err) {
     console.error('Błąd wysyłania leaderboard:', err);
@@ -277,8 +350,6 @@ async function sendWeeklyLeaderboard() {
 }
 
 // ==================== SYSTEM TICKETÓW ====================
-const activeTickets = new Map(); // channelId -> { ownerId, type, createdAt }
-
 function hasStaffRole(member) {
   if (!TICKET_STAFF_ROLE_1 && !TICKET_STAFF_ROLE_2) return false;
   const r1 = TICKET_STAFF_ROLE_1 ? member.roles.cache.has(TICKET_STAFF_ROLE_1) : false;
@@ -286,7 +357,7 @@ function hasStaffRole(member) {
   return r1 || r2;
 }
 
-function buildTicketEmbed(ownerId) {
+function buildTicketEmbed() {
   return new EmbedBuilder()
     .setColor(0xf26522)
     .setTitle('🎫 Ticket')
@@ -341,10 +412,8 @@ async function createTicket(interaction, type) {
   }
 
   const guild = interaction.guild;
-  const member = interaction.member;
   const user = interaction.user;
 
-  // Sprawdź czy użytkownik już ma otwarty ticket
   for (const [chId, ticket] of activeTickets) {
     if (ticket.ownerId === user.id && ticket.type === type) {
       return interaction.reply({ content: `❌ Masz już otwarty ticket tego typu: <#${chId}>`, ephemeral: true });
@@ -384,9 +453,11 @@ async function createTicket(interaction, type) {
       permissionOverwrites
     });
 
-    activeTickets.set(ticketChannel.id, { ownerId: user.id, type, createdAt: Date.now() });
+    const ticketData = { ownerId: user.id, type, createdAt: Date.now() };
+    activeTickets.set(ticketChannel.id, ticketData);
+    dbSaveTicket(ticketChannel.id, ticketData);
 
-    const embed = buildTicketEmbed(user.id);
+    const embed = buildTicketEmbed();
     const buttons = buildTicketButtons(ticketChannel.id);
 
     await ticketChannel.send({ content: `<@${user.id}>`, embeds: [embed], components: [buttons] });
@@ -413,7 +484,6 @@ async function closeTicket(interaction, channelId) {
     const channel = await client.channels.fetch(channelId);
     const owner = await client.users.fetch(ticket.ownerId);
 
-    // Log
     if (TICKET_LOG_CHANNEL) {
       const logChannel = await client.channels.fetch(TICKET_LOG_CHANNEL);
       if (logChannel) {
@@ -432,7 +502,6 @@ async function closeTicket(interaction, channelId) {
       }
     }
 
-    // DM do właściciela
     try {
       const dmEmbed = new EmbedBuilder()
         .setColor(0xdc3545)
@@ -444,6 +513,8 @@ async function closeTicket(interaction, channelId) {
     } catch (e) { console.log('Nie udało się wysłać DM o zamknięciu ticketu do', owner.tag); }
 
     activeTickets.delete(channelId);
+    dbDeleteTicket(channelId);
+
     await interaction.reply({ content: '🔒 Ticket zostanie zamknięty...', ephemeral: true });
     setTimeout(() => channel.delete().catch(() => {}), 3000);
   } catch (err) {
@@ -509,7 +580,7 @@ client.on('interactionCreate', async (interaction) => {
     return closeTicket(interaction, channelId);
   }
 
-  // Ticket add user button -> send UserSelectMenu
+  // Ticket add user button
   if (interaction.customId.startsWith('ticket_add_')) {
     const channelId = interaction.customId.replace('ticket_add_', '');
     const member = interaction.member;
@@ -540,7 +611,7 @@ client.on('interactionCreate', async (interaction) => {
     if (action === 'start') {
       if (data.currentShift) return interaction.reply({ content: '❌ Masz już rozpoczętą pracę.', ephemeral: true });
       data.currentShift = { startTime: Date.now(), accumulatedMs: 0, isPaused: false, pauseStart: null };
-      saveShifts();
+      dbSaveShift(userId, data);
     } else if (action === 'pause') {
       if (!data.currentShift) return interaction.reply({ content: '❌ Nie masz rozpoczętej pracy.', ephemeral: true });
       if (data.currentShift.isPaused) {
@@ -552,7 +623,7 @@ client.on('interactionCreate', async (interaction) => {
         data.currentShift.isPaused = true;
         data.currentShift.pauseStart = Date.now();
       }
-      saveShifts();
+      dbSaveShift(userId, data);
     } else if (action === 'end') {
       if (!data.currentShift) return interaction.reply({ content: '❌ Nie masz rozpoczętej pracy.', ephemeral: true });
       const sessionMs = getCurrentSessionMs(data);
@@ -561,7 +632,7 @@ client.on('interactionCreate', async (interaction) => {
       data.weeklySeconds += sessionSec;
       data.weeklyShiftCount += 1;
       data.currentShift = null;
-      saveShifts();
+      dbSaveShift(userId, data);
     }
 
     const payload = buildShiftEmbed(userId);
@@ -673,7 +744,7 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 // ==================== STARTUP ====================
-client.once('clientReady', async () => {
+client.once('ready', async () => {
   console.log('🤖 Bot GDDKiA jest online!');
   console.log('   Tag:', client.user.tag);
   console.log('   Serwer:', GUILD_ID);
@@ -681,10 +752,11 @@ client.once('clientReady', async () => {
   console.log('   Kanał pracy:', SHIFT_CHANNEL_ID || 'NIEUSTAWIONY');
   console.log('   Kanał tabeli:', LEADERBOARD_CHANNEL_ID || 'NIEUSTAWIONY');
   console.log('   Kanał ticketów:', TICKET_CHANNEL_ID || 'NIEUSTAWIONY');
+  console.log('   Baza danych:', DB_PATH);
   console.log('   Webhook:', `http://localhost:${PORT}/api/submit`);
   client.user.setActivity('podania GDDKiA', { type: 3 });
 
-  loadShifts();
+  dbLoadAll();
 
   // Rejestracja slash commands
   try {
@@ -720,12 +792,10 @@ client.once('clientReady', async () => {
     console.error('❌ Błąd rejestracji komend:', err);
   }
 
-  // Auto-wyślij panel ticketów przy starcie (jeśli skonfigurowano)
   if (TICKET_CHANNEL_ID) {
     setTimeout(() => sendTicketPanel(), 3000);
   }
 
-  // Sprawdź czy trzeba wysłać tabelę
   setTimeout(() => {
     const currentWeek = getWeekKey();
     for (const data of shiftData.values()) {
@@ -736,7 +806,6 @@ client.once('clientReady', async () => {
     }
   }, 5000);
 
-  // Sprawdzaj co godzinę czy minął tydzień
   setInterval(() => {
     const currentWeek = getWeekKey();
     for (const data of shiftData.values()) {
