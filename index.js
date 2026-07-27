@@ -308,6 +308,9 @@ async function sendWeeklyLeaderboard() {
     const channel = await client.channels.fetch(LEADERBOARD_CHANNEL_ID);
     if (!channel) return;
 
+    const guild = await client.guilds.fetch(GUILD_ID);
+    await guild.members.fetch();
+
     const entries = Array.from(shiftData.entries())
       .map(([userId, data]) => ({ userId, ...data }))
       .filter(e => e.weeklySeconds > 0)
@@ -326,9 +329,18 @@ async function sendWeeklyLeaderboard() {
     } else {
       entries.forEach((entry, index) => {
         const medal = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣'][index];
+        const member = guild.members.cache.get(entry.userId);
+        const displayName = member ? (member.displayName || member.user.username) : 'Nieznany użytkownik';
+        const roles = member ? member.roles.cache
+          .filter(r => r.id !== guild.id)
+          .sort((a, b) => b.position - a.position)
+          .first(3)
+          .map(r => r.name)
+          .join(', ') || 'Brak ról' : 'Brak ról';
+
         embed.addFields({
-          name: `${medal} <@${entry.userId}>`,
-          value: `Czas: **${formatTime(entry.weeklySeconds)}** | Shiftów: **${entry.weeklyShiftCount}**`,
+          name: `${medal} ${displayName}`,
+          value: `Czas: **${formatTime(entry.weeklySeconds)}** | Shiftów: **${entry.weeklyShiftCount}**\nRole: ${roles}`,
           inline: false
         });
       });
@@ -540,12 +552,22 @@ client.on('interactionCreate', async (interaction) => {
       const data = getUserShiftData(target.id);
       const sessionSec = Math.floor(getCurrentSessionMs(data) / 1000);
 
+      const guild = await client.guilds.fetch(GUILD_ID);
+      const member = await guild.members.fetch(target.id).catch(() => null);
+      const displayName = member ? (member.displayName || member.user.username) : target.username;
+      const roles = member ? member.roles.cache
+        .filter(r => r.id !== guild.id)
+        .sort((a, b) => b.position - a.position)
+        .first(3)
+        .map(r => r.name)
+        .join(', ') || 'Brak ról' : 'Brak ról';
+
       const embed = new EmbedBuilder()
         .setColor(0xf26522)
         .setTitle('📋 Statystyki Pracy')
         .setThumbnail(SHIFT_LOGO_URL || null)
         .addFields(
-          { name: 'Użytkownik', value: `<@${target.id}>`, inline: false },
+          { name: 'Użytkownik', value: `${displayName}\nRole: ${roles}`, inline: false },
           { name: '📅 Ten tydzień', value: formatTime(data.weeklySeconds + sessionSec), inline: true },
           { name: '📊 Ogółem', value: formatTime(data.totalSecondsAllTime + sessionSec), inline: true },
           { name: '🔢 Shiftów w tym tygodniu', value: String(data.weeklyShiftCount), inline: true }
@@ -553,7 +575,7 @@ client.on('interactionCreate', async (interaction) => {
         .setFooter({ text: `Sprawdzone: ${new Date().toLocaleString('pl-PL')}` })
         .setTimestamp();
 
-      return interaction.reply({ embeds: [embed], ephemeral: true });
+      return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
     }
 
     if (interaction.commandName === 'ticketsetup') {
