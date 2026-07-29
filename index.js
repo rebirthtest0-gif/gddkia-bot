@@ -28,6 +28,11 @@ const TICKET_LOG_CHANNEL = process.env.TICKET_LOG_CHANNEL;
 const TICKET_STAFF_ROLE_1 = process.env.TICKET_STAFF_ROLE_1;
 const TICKET_STAFF_ROLE_2 = process.env.TICKET_STAFF_ROLE_2;
 
+// NOWE ZMIENNE KONFIGURACYJNE (z fallbackiem na podane ID)
+const RECRUITMENT_ROLE_ID = process.env.RECRUITMENT_ROLE_ID || '1530216178822152388';
+const TIME_LOG_CHANNEL_ID = process.env.TIME_LOG_CHANNEL_ID || '1530216180839878894';
+const TIME_LOG_PING_ROLE_ID = process.env.TIME_LOG_PING_ROLE_ID || '1530216178834870373';
+
 // BAZA DANYCH — na Railway ustaw DB_PATH=/data/bot.db + Volume pod /data
 const DB_PATH = process.env.DB_PATH || './bot.db';
 
@@ -46,7 +51,9 @@ db.exec(`
     weeklySeconds INTEGER DEFAULT 0,
     weeklyShiftCount INTEGER DEFAULT 0,
     currentShift TEXT,
-    lastWeekKey TEXT
+    lastWeekKey TEXT,
+    weeklyPoints INTEGER DEFAULT 0,
+    totalPoints INTEGER DEFAULT 0
   )
 `);
 
@@ -58,6 +65,27 @@ db.exec(`
     createdAt INTEGER NOT NULL
   )
 `);
+
+// Nowa tabela na raporty pracy
+db.exec(`
+  CREATE TABLE IF NOT EXISTS work_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    userId TEXT NOT NULL,
+    description TEXT NOT NULL,
+    points INTEGER DEFAULT 0,
+    weekKey TEXT NOT NULL,
+    createdAt INTEGER NOT NULL
+  )
+`);
+
+// Migracja: dodaj kolumny punktów jeśli nie istnieją (dla istniejących baz)
+const shiftColumns = db.prepare('PRAGMA table_info(shifts)').all().map(c => c.name);
+if (!shiftColumns.includes('weeklyPoints')) {
+  db.exec('ALTER TABLE shifts ADD COLUMN weeklyPoints INTEGER DEFAULT 0');
+}
+if (!shiftColumns.includes('totalPoints')) {
+  db.exec('ALTER TABLE shifts ADD COLUMN totalPoints INTEGER DEFAULT 0');
+}
 
 // ==================== CACHE W PAMIĘCI ====================
 const shiftData = new Map();
@@ -71,7 +99,9 @@ function dbLoadAll() {
       weeklySeconds: row.weeklySeconds,
       weeklyShiftCount: row.weeklyShiftCount,
       currentShift: row.currentShift ? JSON.parse(row.currentShift) : null,
-      lastWeekKey: row.lastWeekKey
+      lastWeekKey: row.lastWeekKey,
+      weeklyPoints: row.weeklyPoints || 0,
+      totalPoints: row.totalPoints || 0
     });
   }
   console.log(`📁 Wczytano ${shiftRows.length} rekordów pracy z SQLite`);
@@ -89,21 +119,25 @@ function dbLoadAll() {
 
 function dbSaveShift(userId, data) {
   db.prepare(`
-    INSERT INTO shifts (userId, totalSecondsAllTime, weeklySeconds, weeklyShiftCount, currentShift, lastWeekKey)
-    VALUES (@userId, @totalSecondsAllTime, @weeklySeconds, @weeklyShiftCount, @currentShift, @lastWeekKey)
+    INSERT INTO shifts (userId, totalSecondsAllTime, weeklySeconds, weeklyShiftCount, currentShift, lastWeekKey, weeklyPoints, totalPoints)
+    VALUES (@userId, @totalSecondsAllTime, @weeklySeconds, @weeklyShiftCount, @currentShift, @lastWeekKey, @weeklyPoints, @totalPoints)
     ON CONFLICT(userId) DO UPDATE SET
       totalSecondsAllTime = excluded.totalSecondsAllTime,
       weeklySeconds = excluded.weeklySeconds,
       weeklyShiftCount = excluded.weeklyShiftCount,
       currentShift = excluded.currentShift,
-      lastWeekKey = excluded.lastWeekKey
+      lastWeekKey = excluded.lastWeekKey,
+      weeklyPoints = excluded.weeklyPoints,
+      totalPoints = excluded.totalPoints
   `).run({
     userId,
     totalSecondsAllTime: data.totalSecondsAllTime,
     weeklySeconds: data.weeklySeconds,
     weeklyShiftCount: data.weeklyShiftCount,
     currentShift: data.currentShift ? JSON.stringify(data.currentShift) : null,
-    lastWeekKey: data.lastWeekKey
+    lastWeekKey: data.lastWeekKey,
+    weeklyPoints: data.weeklyPoints || 0,
+    totalPoints: data.totalPoints || 0
   });
 }
 
@@ -228,7 +262,9 @@ function getUserShiftData(userId) {
       weeklySeconds: 0,
       weeklyShiftCount: 0,
       currentShift: null,
-      lastWeekKey: currentWeek
+      lastWeekKey: currentWeek,
+      weeklyPoints: 0,
+      totalPoints: 0
     };
     shiftData.set(userId, fresh);
     dbSaveShift(userId, fresh);
@@ -238,6 +274,7 @@ function getUserShiftData(userId) {
   if (data.lastWeekKey !== currentWeek) {
     data.weeklySeconds = 0;
     data.weeklyShiftCount = 0;
+    data.weeklyPoints = 0;
     data.lastWeekKey = currentWeek;
     dbSaveShift(userId, data);
   }
@@ -277,6 +314,8 @@ function buildShiftEmbed(userId) {
       { name: 'Twoja Praca', value: `${data.weeklyShiftCount} shiftów`, inline: true },
       { name: 'Czas Całkowity Pracy', value: formatTime(totalWeeklySec), inline: true },
       { name: 'Twój Czas Zazwyczaj', value: data.weeklyShiftCount > 0 ? formatTime(avgSec) : 'Brak danych', inline: true },
+      { name: '⭐ Punkty (tydzień)', value: String(data.weeklyPoints || 0), inline: true },
+      { name: '⭐ Punkty (ogółem)', value: String(data.totalPoints || 0), inline: true },
       { name: 'Status', value: statusText, inline: true }
     )
     .setFooter({ text: `Aktualizacja: ${new Date().toLocaleString('pl-PL')}` });
@@ -313,7 +352,7 @@ async function sendWeeklyLeaderboard() {
 
     const entries = Array.from(shiftData.entries())
       .map(([userId, data]) => ({ userId, ...data }))
-      .filter(e => e.weeklySeconds > 0)
+      .filter(e => e.weeklySeconds > 0 || e.weeklyPoints > 0)
       .sort((a, b) => b.weeklySeconds - a.weeklySeconds)
       .slice(0, 5);
 
@@ -340,7 +379,7 @@ async function sendWeeklyLeaderboard() {
 
         embed.addFields({
           name: `${medal} ${displayName}`,
-          value: `Czas: **${formatTime(entry.weeklySeconds)}** | Shiftów: **${entry.weeklyShiftCount}**\nRole: ${roles}`,
+          value: `Czas: **${formatTime(entry.weeklySeconds)}** | Shiftów: **${entry.weeklyShiftCount}** | Punkty: **${entry.weeklyPoints || 0}**\nRole: ${roles}`,
           inline: false
         });
       });
@@ -352,6 +391,7 @@ async function sendWeeklyLeaderboard() {
     for (const [userId, data] of shiftData) {
       data.weeklySeconds = 0;
       data.weeklyShiftCount = 0;
+      data.weeklyPoints = 0;
       data.lastWeekKey = currentWeek;
       dbSaveShift(userId, data);
     }
@@ -570,12 +610,14 @@ client.on('interactionCreate', async (interaction) => {
           { name: 'Użytkownik', value: `${displayName}\nRole: ${roles}`, inline: false },
           { name: '📅 Ten tydzień', value: formatTime(data.weeklySeconds + sessionSec), inline: true },
           { name: '📊 Ogółem', value: formatTime(data.totalSecondsAllTime + sessionSec), inline: true },
-          { name: '🔢 Shiftów w tym tygodniu', value: String(data.weeklyShiftCount), inline: true }
+          { name: '🔢 Shiftów w tym tygodniu', value: String(data.weeklyShiftCount), inline: true },
+          { name: '⭐ Punkty (tydzień)', value: String(data.weeklyPoints || 0), inline: true },
+          { name: '⭐ Punkty (ogółem)', value: String(data.totalPoints || 0), inline: true }
         )
         .setFooter({ text: `Sprawdzone: ${new Date().toLocaleString('pl-PL')}` })
         .setTimestamp();
 
-      return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+      return interaction.reply({ embeds: [embed], ephemeral: true });
     }
 
     if (interaction.commandName === 'ticketsetup') {
@@ -584,6 +626,84 @@ client.on('interactionCreate', async (interaction) => {
       }
       await sendTicketPanel();
       return interaction.reply({ content: '✅ Panel ticketów został wysłany.', ephemeral: true });
+    }
+
+    // ===== NOWA KOMENDA /RAPORT =====
+    if (interaction.commandName === 'raport') {
+      const description = interaction.options.getString('opis');
+      const points = interaction.options.getInteger('punkty') || 1;
+
+      const data = getUserShiftData(interaction.user.id);
+      data.weeklyPoints = (data.weeklyPoints || 0) + points;
+      data.totalPoints = (data.totalPoints || 0) + points;
+      dbSaveShift(interaction.user.id, data);
+
+      db.prepare(`
+        INSERT INTO work_reports (userId, description, points, weekKey, createdAt)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(interaction.user.id, description, points, getWeekKey(), Date.now());
+
+      return interaction.reply({ content: `✅ Raport zapisany! Opis: "${description}" | Punkty: +${points}`, ephemeral: true });
+    }
+
+    // ===== NOWA KOMENDA /ZARZĄDZAJ-CZASEM =====
+    if (interaction.commandName === 'zarzadzaj-czasem') {
+      const requiredRole = RECRUITMENT_ROLE_ID;
+      const hasRole = interaction.member.roles.cache.has(requiredRole);
+      const isAdmin = interaction.memberPermissions.has('Administrator');
+      if (!hasRole && !isAdmin) {
+        return interaction.reply({ content: '❌ Nie masz uprawnień do zarządzania czasem pracy.', ephemeral: true });
+      }
+
+      const targetUser = interaction.options.getUser('osoba');
+      const action = interaction.options.getString('akcja');
+      const minutes = interaction.options.getInteger('minuty');
+      const reason = interaction.options.getString('powod');
+
+      const data = getUserShiftData(targetUser.id);
+      const seconds = minutes * 60;
+      const oldWeekly = data.weeklySeconds;
+      const oldTotal = data.totalSecondsAllTime;
+
+      if (action === 'dodaj') {
+        data.weeklySeconds += seconds;
+        data.totalSecondsAllTime += seconds;
+      } else {
+        data.weeklySeconds = Math.max(0, data.weeklySeconds - seconds);
+        data.totalSecondsAllTime = Math.max(0, data.totalSecondsAllTime - seconds);
+      }
+
+      dbSaveShift(targetUser.id, data);
+
+      // Wyślij log na kanał
+      try {
+        const logChannel = await client.channels.fetch(TIME_LOG_CHANNEL_ID);
+        if (logChannel) {
+          const logEmbed = new EmbedBuilder()
+            .setColor(action === 'dodaj' ? 0x28a745 : 0xdc3545)
+            .setTitle(action === 'dodaj' ? '➕ Dodano czas pracy' : '➖ Odjęto czas pracy')
+            .addFields(
+              { name: 'Administrator', value: `<@${interaction.user.id}>`, inline: true },
+              { name: 'Pracownik', value: `<@${targetUser.id}>`, inline: true },
+              { name: 'Wartość', value: `${minutes} minut (${formatTime(seconds)})`, inline: true },
+              { name: 'Czas tygodniowy (przed)', value: formatTime(oldWeekly), inline: true },
+              { name: 'Czas tygodniowy (po)', value: formatTime(data.weeklySeconds), inline: true },
+              { name: 'Czas całkowity (przed)', value: formatTime(oldTotal), inline: true },
+              { name: 'Czas całkowity (po)', value: formatTime(data.totalSecondsAllTime), inline: true },
+              { name: 'Powód', value: reason, inline: false }
+            )
+            .setTimestamp();
+
+          await logChannel.send({ content: `<@&${TIME_LOG_PING_ROLE_ID}>`, embeds: [logEmbed] });
+        }
+      } catch (err) {
+        console.error('Błąd wysyłania logu zmiany czasu:', err);
+      }
+
+      return interaction.reply({
+        content: `✅ ${action === 'dodaj' ? 'Dodano' : 'Odjęto'} ${minutes} minut dla <@${targetUser.id}>.\nPowód: ${reason}`,
+        ephemeral: true
+      });
     }
   }
 
@@ -666,6 +786,13 @@ client.on('interactionCreate', async (interaction) => {
   const isAccept = customId.startsWith('accept_');
   const isReject = customId.startsWith('reject_');
   if (!isAccept && !isReject) return;
+
+  // ===== SPRAWDZENIE ROLI PRZY PODANIACH =====
+  const hasRecruitmentRole = interaction.member.roles.cache.has(RECRUITMENT_ROLE_ID);
+  const isAdmin = interaction.memberPermissions.has('Administrator');
+  if (!hasRecruitmentRole && !isAdmin) {
+    return interaction.reply({ content: '❌ Nie masz uprawnień do obsługi podań.', ephemeral: true });
+  }
 
   try {
     const embed = interaction.message.embeds[0];
@@ -774,6 +901,8 @@ client.once('ready', async () => {
   console.log('   Kanał pracy:', SHIFT_CHANNEL_ID || 'NIEUSTAWIONY');
   console.log('   Kanał tabeli:', LEADERBOARD_CHANNEL_ID || 'NIEUSTAWIONY');
   console.log('   Kanał ticketów:', TICKET_CHANNEL_ID || 'NIEUSTAWIONY');
+  console.log('   Kanał logów czasu:', TIME_LOG_CHANNEL_ID);
+  console.log('   Rola rekrutacyjna:', RECRUITMENT_ROLE_ID);
   console.log('   Baza danych:', DB_PATH);
   console.log('   Webhook:', `http://localhost:${PORT}/api/submit`);
   client.user.setActivity('podania GDDKiA', { type: 3 });
@@ -806,10 +935,65 @@ client.once('ready', async () => {
         name: 'ticketsetup',
         description: 'Wyślij panel ticketów na kanał (tylko admin)',
         dm_permission: false
+      },
+      {
+        name: 'raport',
+        description: 'Zgłoś wykonaną pracę / czynność (wpływa na leaderboard)',
+        options: [
+          {
+            name: 'opis',
+            description: 'Opis wykonanej pracy',
+            type: 3,
+            required: true
+          },
+          {
+            name: 'punkty',
+            description: 'Ilość punktów (domyślnie 1, może być ujemna)',
+            type: 4,
+            required: false
+          }
+        ],
+        dm_permission: false
+      },
+      {
+        name: 'zarzadzaj-czasem',
+        description: 'Dodaj lub odejmij czas pracy użytkownikowi',
+        options: [
+          {
+            name: 'osoba',
+            description: 'Wybierz osobę',
+            type: 6,
+            required: true
+          },
+          {
+            name: 'akcja',
+            description: 'Wybierz akcję',
+            type: 3,
+            required: true,
+            choices: [
+              { name: 'Dodaj czas', value: 'dodaj' },
+              { name: 'Odejmij czas', value: 'odejmij' }
+            ]
+          },
+          {
+            name: 'minuty',
+            description: 'Ilość minut',
+            type: 4,
+            required: true,
+            min_value: 1
+          },
+          {
+            name: 'powod',
+            description: 'Powód zmiany',
+            type: 3,
+            required: true
+          }
+        ],
+        dm_permission: false
       }
     ];
     await rest.put(Routes.applicationGuildCommands(client.user.id, GUILD_ID), { body: commands });
-    console.log('✅ Zarejestrowano komendy slash: /praca, /sprawdz, /ticketsetup');
+    console.log('✅ Zarejestrowano komendy slash: /praca, /sprawdz, /ticketsetup, /raport, /zarzadzaj-czasem');
   } catch (err) {
     console.error('❌ Błąd rejestracji komend:', err);
   }
