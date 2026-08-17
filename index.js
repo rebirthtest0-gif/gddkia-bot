@@ -4,6 +4,8 @@ const cors = require('cors');
 const Database = require('better-sqlite3');
 require('dotenv').config();
 
+const LOGO_URL = 'https://cdn.discordapp.com/attachments/1458932683676586294/1537403608188850186/1786615965010.jpg?ex=6a83876f&is=6a8235ef&hm=2f63fee9367a037886ac6456f67865cb2cd191ae5f2f7c3fb4fdb6883a7917ba&';
+
 // ==================== KONFIGURACJA ====================
 const TOKEN = process.env.DISCORD_TOKEN;
 const GUILD_ID = process.env.GUILD_ID;
@@ -200,6 +202,7 @@ app.post('/api/submit', async (req, res) => {
       .setColor(0xf26522)
       .setTitle('🛣️ Nowe podanie do GDDKiA')
       .setDescription('Kliknij przycisk poniżej, aby rozpatrzyć podanie.')
+      .setThumbnail(LOGO_URL)
       .addFields(
         { name: '👤 Imię i Nazwisko (IC)', value: answers.q1 || 'Brak', inline: true },
         { name: '🎂 Wiek (OOC)', value: answers.q2 || 'Brak', inline: true },
@@ -308,7 +311,7 @@ function buildShiftEmbed(userId) {
   const embed = new EmbedBuilder()
     .setColor(0xf26522)
     .setTitle('Menadżer Pracy')
-    .setThumbnail(SHIFT_LOGO_URL || null)
+    .setThumbnail(LOGO_URL)
     .addFields(
       { name: '📋 Informacje Główne', value: '\u200B' },
       { name: 'Twoja Praca', value: `${data.weeklyShiftCount} shiftów`, inline: true },
@@ -360,7 +363,7 @@ async function sendWeeklyLeaderboard() {
       .setColor(0xf26522)
       .setTitle('📊 Podsumowanie tygodnia GDDKiA')
       .setDescription('TOP 5 pracowników według czasu pracy w tym tygodniu')
-      .setThumbnail(SHIFT_LOGO_URL || null)
+      .setThumbnail(LOGO_URL)
       .setTimestamp();
 
     if (entries.length === 0) {
@@ -414,6 +417,7 @@ function buildTicketEmbed() {
     .setColor(0xf26522)
     .setTitle('🎫 Ticket')
     .setDescription('Witamy! Twój ticket zostanie niebawem rozpatrzony. Prosimy o cierpliwość.')
+    .setThumbnail(LOGO_URL)
     .setFooter({ text: `Utworzono: ${new Date().toLocaleString('pl-PL')}` })
     .setTimestamp();
 }
@@ -441,7 +445,7 @@ async function sendTicketPanel() {
       .setColor(0xf26522)
       .setTitle('🎫 System Ticketów GDDKiA')
       .setDescription('Wybierz odpowiedni rodzaj ticketu, klikając przycisk poniżej.')
-      .setThumbnail(SHIFT_LOGO_URL || null)
+      .setThumbnail(LOGO_URL)
       .setFooter({ text: 'GDDKiA Katowice RP' })
       .setTimestamp();
 
@@ -542,6 +546,7 @@ async function closeTicket(interaction, channelId) {
         const logEmbed = new EmbedBuilder()
           .setColor(0xdc3545)
           .setTitle('🔒 Ticket Zamknięty')
+          .setThumbnail(LOGO_URL)
           .addFields(
             { name: 'Kanał', value: `#${channel.name}`, inline: true },
             { name: 'Typ', value: ticket.type, inline: true },
@@ -559,6 +564,7 @@ async function closeTicket(interaction, channelId) {
         .setColor(0xdc3545)
         .setTitle('🔒 Ticket Zamknięty')
         .setDescription(`Twój ticket **#${channel.name}** został zamknięty przez <@${interaction.user.id}>.`)
+        .setThumbnail(LOGO_URL)
         .setFooter({ text: `Zamknięto: ${new Date().toLocaleString('pl-PL')}` })
         .setTimestamp();
       await owner.send({ embeds: [dmEmbed] });
@@ -605,7 +611,7 @@ client.on('interactionCreate', async (interaction) => {
       const embed = new EmbedBuilder()
         .setColor(0xf26522)
         .setTitle('📋 Statystyki Pracy')
-        .setThumbnail(SHIFT_LOGO_URL || null)
+        .setThumbnail(LOGO_URL)
         .addFields(
           { name: 'Użytkownik', value: `${displayName}\nRole: ${roles}`, inline: false },
           { name: '📅 Ten tydzień', value: formatTime(data.weeklySeconds + sessionSec), inline: true },
@@ -682,6 +688,7 @@ client.on('interactionCreate', async (interaction) => {
           const logEmbed = new EmbedBuilder()
             .setColor(action === 'dodaj' ? 0x28a745 : 0xdc3545)
             .setTitle(action === 'dodaj' ? '➕ Dodano czas pracy' : '➖ Odjęto czas pracy')
+            .setThumbnail(LOGO_URL)
             .addFields(
               { name: 'Administrator', value: `<@${interaction.user.id}>`, inline: true },
               { name: 'Pracownik', value: `<@${targetUser.id}>`, inline: true },
@@ -833,7 +840,7 @@ client.on('interactionCreate', async (interaction) => {
       });
       try {
         await user.send({
-          embeds: [new EmbedBuilder().setColor(0x28a745).setTitle('✅ Podanie zaakceptowane!')
+          embeds: [new EmbedBuilder().setColor(0x28a745).setTitle('✅ Podanie zaakceptowane!').setThumbnail(LOGO_URL)
             .setDescription(`Gratulacje! Twoje podanie do **GDDKiA** zostało **zaakceptowane** przez ${interaction.user.tag}.\n\nNadano Ci role: **${role1.name}**, **${role2.name}**, **${role3.name}**.\n\nZapraszamy na serwer!`).setTimestamp()]
         });
       } catch (dmErr) { console.log('Nie udało się wysłać DM do', user.tag); }
@@ -845,7 +852,7 @@ client.on('interactionCreate', async (interaction) => {
     } else {
       try {
         await user.send({
-          embeds: [new EmbedBuilder().setColor(0xdc3545).setTitle('❌ Podanie odrzucone')
+          embeds: [new EmbedBuilder().setColor(0xdc3545).setTitle('❌ Podanie odrzucone').setThumbnail(LOGO_URL)
             .setDescription(`Twoje podanie do **GDDKiA** zostało **odrzucone** przez ${interaction.user.tag}.\n\nMożesz spróbować ponownie w przyszłości.`).setTimestamp()]
         });
       } catch (dmErr) { console.log('Nie udało się wysłać DM do', user.tag); }
