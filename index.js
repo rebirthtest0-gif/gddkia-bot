@@ -4,7 +4,7 @@ const cors = require('cors');
 const Database = require('better-sqlite3');
 require('dotenv').config();
 
-const LOGO_URL = 'https://cdn.discordapp.com/attachments/1458932683676586294/1557816921486004364/IMG_0190.jpg?ex=6ac92d90&is=6ac7dc10&hm=c1333d4ce5e61e489e14f5ba6979ce8fd77cf14a7903562a427ef04c77cd03b4&';
+const LOGO_URL = 'https://cdn.discordapp.com/attachments/1458932683676586294/1557822815028117584/removebg.png?ex=6ac9330e&is=6ac7e18e&hm=eecf33b92389da23e818fcadcea1bb072ab93d88a2a5cefedb98eb0be94bee55&';
 
 // ==================== KONFIGURACJA ====================
 const TOKEN = process.env.DISCORD_TOKEN;
