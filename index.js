@@ -446,7 +446,7 @@ async function sendTicketPanel() {
       .setTitle('🎫 System Ticketów GDDKiA')
       .setDescription('Wybierz odpowiedni rodzaj ticketu, klikając przycisk poniżej.')
       .setThumbnail(LOGO_URL)
-      .setFooter({ text: 'GDDKiA Katowice RP' })
+      .setFooter({ text: 'GDDKiA' })
       .setTimestamp();
 
     const row = new ActionRowBuilder().addComponents(
